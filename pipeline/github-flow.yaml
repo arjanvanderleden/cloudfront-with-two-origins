@@ -1,0 +1,123 @@
+name: Update Infrastructure, Test, Build and Deploy
+
+on: push
+
+jobs:
+
+  update-infra-structure:
+    name: Update or create infrastructure
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/development'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@master
+
+      # for all environments
+      - name: (All environments) Update Models Infrastructure
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.AWS_SECRET_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_KEY }}
+          aws configure set region eu-west-1
+          aws cloudformation deploy \
+          --stack-name model-bucket \
+          --template-file deploy/model-bucket-infrastructure-stack.yaml \
+          --no-fail-on-empty-changeset \
+          --parameter-overrides \
+          S3ModelBucketName=models.xxx-xxx.org
+
+      - name: (Staging) Update App Infrastructure
+        if: github.ref == 'refs/heads/development'
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.AWS_SECRET_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_KEY }}
+          aws configure set region eu-west-1
+          MODEL_BUCKET_NAME=$(aws cloudformation describe-stacks --stack-name models-xxx-xxx-org --query "Stacks[0].Outputs[?OutputKey=='ModelBucket'].OutputValue" --output text)
+          CLOUDFRONT_OAI=$(aws cloudformation describe-stacks --stack-name models-xxx-xxx-org --query "Stacks[0].Outputs[?OutputKey=='CloudfrontOAI'].OutputValue" --output text)
+          CLOUDFRONT_OAI_USER_ID=$(aws cloudformation describe-stacks --stack-name models-xxx-xxx-org --query "Stacks[0].Outputs[?OutputKey=='CloudfrontOAIUserId'].OutputValue" --output text)
+          aws cloudformation deploy \
+          --stack-name viewer-xxx-xxx-org-staging \
+          --template-file deploy/infrastructure-stack.yaml \
+          --no-fail-on-empty-changeset \
+          --parameter-overrides \
+          HostedZoneId=XXXXXXXXXXXXXX \
+          AlternateDomainName=viewer-staging.xxx-xxx.org \
+          CertificateArn=arn:aws:acm:us-east-1:xxxxxx:certificate/xxxxxxxxx \
+          ModelBucketName=$MODEL_BUCKET_NAME \
+          CloudfrontOAI=$CLOUDFRONT_OAI \
+          CloudfrontOAIUserId=$CLOUDFRONT_OAI_USER_ID
+
+
+      - name: (Production) Update App Infrastructure
+        if: github.ref == 'refs/heads/master'
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.AWS_SECRET_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_KEY }}
+          aws configure set region eu-west-1
+          MODEL_BUCKET_NAME=$(aws cloudformation describe-stacks --stack-name models-xxx-xxx-org --query "Stacks[0].Outputs[?OutputKey=='ModelBucket'].OutputValue" --output text)
+          CLOUDFRONT_OAI=$(aws cloudformation describe-stacks --stack-name models-xxx-xxx-org --query "Stacks[0].Outputs[?OutputKey=='CloudfrontOAI'].OutputValue" --output text)
+          CLOUDFRONT_OAI_USER_ID=$(aws cloudformation describe-stacks --stack-name models-xxx-xxx-org --query "Stacks[0].Outputs[?OutputKey=='CloudfrontOAIUserId'].OutputValue" --output text)
+          aws cloudformation deploy \
+          --stack-name viewer-xxx-xxx-org-production \
+          --template-file deploy/infrastructure-stack.yaml \
+          --no-fail-on-empty-changeset \
+          --parameter-overrides \
+          HostedZoneId=XXXXXXXXXXXXXX \
+          AlternateDomainName=viewer.xxx-xxx.org \
+          CertificateArn=arn:aws:acm:us-east-1:xxxxxx:certificate/xxxxxxxxx \
+          ModelBucketName=$MODEL_BUCKET_NAME \
+          CloudfrontOAI=$CLOUDFRONT_OAI \
+          CloudfrontOAIUserId=$CLOUDFRONT_OAI_USER_ID
+
+
+  test-and-build:
+    name: Test and build app
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/development'
+    runs-on: ubuntu-latest
+    steps:
+
+      - uses: actions/checkout@master
+
+      - run: npm install
+
+      - run: npm run test
+        env:
+          CI: true
+
+      - run: npm run build
+
+      - uses: actions/upload-artifact@v1
+        with:
+          name: build
+          path: build
+
+  deploy-and-invalidate:
+    name: Deploy app to S3 and Invalidate Cloudfront Distribution
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/development'
+    needs: [test-and-build, update-infra-structure]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v1
+        with:
+          name: build
+
+      - name: (Staging) Deploy to S3 and create Cloudfront Distribution invalidation
+        if: github.ref == 'refs/heads/development'
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.AWS_SECRET_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_KEY }}
+          aws configure set region eu-west-1
+          aws s3 sync ./build s3://viewer-staging.xxx-xxx.org --delete
+          CLOUDFRONT_DISTRIBUTION_ID=$(aws cloudformation describe-stacks --stack-name viewer-xxx-xxx-org-staging --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistribution'].OutputValue" --output text)
+          echo $CLOUDFRONT_DISTRIBUTION_ID
+          aws cloudfront create-invalidation --distribution-id=$CLOUDFRONT_DISTRIBUTION_ID --paths '/*'
+
+      - name: (Production) Deploy to S3 and create Cloudfront Distribution invalidation
+        if: github.ref == 'refs/heads/master'
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.AWS_SECRET_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_KEY }}
+          aws configure set region eu-west-1
+          aws s3 sync ./build s3://viewer.xxx-xxx.org --delete
+          CLOUDFRONT_DISTRIBUTION_ID=$(aws cloudformation describe-stacks --region=eu-west-1 --stack-name viewer-xxx-xxx-org-staging --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistribution'].OutputValue" --output text)
+          aws cloudfront create-invalidation --distribution-id=$CLOUDFRONT_DISTRIBUTION_ID --paths '/*'

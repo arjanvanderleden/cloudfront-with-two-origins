@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: |
+  S3 Bucket for models, shared by environments
+
+Parameters:
+  S3ModelBucketName:
+    Type: String
+    Description: The bucket the models are located
+
+Resources:
+  S3ModelBucket:
+    Properties:
+      AccessControl: Private
+      BucketName: !Ref S3ModelBucketName
+    Type: AWS::S3::Bucket
+  CloudFrontOriginAccessIdentity:
+      Properties:
+        CloudFrontOriginAccessIdentityConfig:
+          Comment: CloudFront OAI
+      Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+  CloudFrontModelBucketPolicy:
+    Properties:
+      Bucket: !Ref S3ModelBucket
+      PolicyDocument:
+        Statement:
+        -
+          Resource: !Join [ "", [ "arn:aws:s3:::", !Ref S3ModelBucket, "/*" ]]
+          Action:
+          - s3:GetObject
+          Effect: Allow
+          Principal:
+            CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
+        Version: '2012-10-17'
+    Type: AWS::S3::BucketPolicy
+
+Outputs:
+  ModelBucket:
+    Value: !Ref S3ModelBucket
+  ModelBucketArn:
+    Value: !GetAtt S3ModelBucket.Arn
+  CloudfrontOAI:
+    Value: !Ref CloudFrontOriginAccessIdentity
+  CloudfrontOAIUserId:
+    Value: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
